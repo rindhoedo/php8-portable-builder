@@ -1,0 +1,194 @@
+name: Build PHP 8 Portable for RHEL 9
+
+on:
+  workflow_dispatch:
+    inputs:
+      php_version:
+        description: 'PHP Version'
+        required: true
+        default: '8.3.14'
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: oraclelinux:9
+    
+    steps:
+      - name: Install Build Dependencies
+        run: |
+          dnf install -y gcc gcc-c++ make autoconf automake libtool \
+            libxml2-devel openssl-devel sqlite-devel \
+            libcurl-devel libpng-devel libjpeg-devel \
+            freetype-devel oniguruma-devel libzip-devel \
+            postgresql-devel readline-devel wget tar gzip bzip2
+      
+      - name: Download PHP Source
+        run: |
+          cd /tmp
+          wget https://www.php.net/distributions/php-${{ inputs.php_version }}.tar.gz
+          tar -xzf php-${{ inputs.php_version }}.tar.gz
+          cd php-${{ inputs.php_version }}
+          ls -la
+      
+      - name: Download Oracle Instant Client
+        run: |
+          cd /tmp
+          wget https://download.oracle.com/otn_software/linux/instantclient/2350000/oracle-instantclient-basic-23.5.0.24.07-1.el9.x86_64.rpm
+          wget https://download.oracle.com/otn_software/linux/instantclient/2350000/oracle-instantclient-devel-23.5.0.24.07-1.el9.x86_64.rpm
+          
+          dnf install -y /tmp/oracle-instantclient-*.rpm
+          
+          export ORACLE_HOME=/usr/lib/oracle/23/client64
+          echo "ORACLE_HOME=$ORACLE_HOME" >> $GITHUB_ENV
+          echo "LD_LIBRARY_PATH=$ORACLE_HOME/lib:$LD_LIBRARY_PATH" >> $GITHUB_ENV
+      
+      - name: Configure PHP
+        run: |
+          cd /tmp/php-${{ inputs.php_version }}
+          
+          ./configure \
+            --prefix=/opt/php8 \
+            --enable-mbstring \
+            --enable-bcmath \
+            --enable-sockets \
+            --enable-exif \
+            --enable-gd \
+            --with-jpeg \
+            --with-freetype \
+            --with-curl \
+            --with-openssl \
+            --with-zlib \
+            --with-pgsql \
+            --with-pdo-pgsql \
+            --with-pdo-mysql \
+            --with-mysqli \
+            --with-oci8=instantclient,/usr/lib/oracle/23/client64 \
+            --with-pdo-oci=instantclient,/usr/lib/oracle/23/client64 \
+            --enable-pcntl \
+            --disable-cgi
+      
+      - name: Compile PHP
+        run: |
+          cd /tmp/php-${{ inputs.php_version }}
+          make -j$(nproc)
+      
+      - name: Install PHP
+        run: |
+          cd /tmp/php-${{ inputs.php_version }}
+          make install
+      
+      - name: Configure php.ini
+        run: |
+          cd /tmp/php-${{ inputs.php_version }}
+          cp php.ini-production /opt/php8/bin/php.ini
+          
+          cat >> /opt/php8/bin/php.ini << 'EOF'
+          
+          ; Extensions built-in
+          memory_limit = 256M
+          upload_max_filesize = 50M
+          post_max_size = 50M
+          max_execution_time = 300
+          max_input_time = 300
+          
+          display_errors = Off
+          error_reporting = E_ALL & ~E_DEPRECATED & ~E_STRICT
+          log_errors = On
+          
+          date.timezone = Asia/Jakarta
+          EOF
+      
+      - name: Create Wrapper Script
+        run: |
+          cat > /opt/php8/run-php.sh << 'EOF'
+          #!/bin/bash
+          export PHP_HOME="$(dirname "$(readlink -f "$0")")"
+          export LD_LIBRARY_PATH="$PHP_HOME/lib:/usr/lib/oracle/23/client64/lib:$LD_LIBRARY_PATH"
+          export PATH="$PHP_HOME/bin:$PATH"
+          export PHPRC="$PHP_HOME/bin"
+          
+          exec "$PHP_HOME/bin/php" "$@"
+          EOF
+          
+          chmod +x /opt/php8/run-php.sh
+      
+      - name: Test PHP
+        run: |
+          /opt/php8/bin/php -v
+          /opt/php8/bin/php -m
+          /opt/php8/bin/php -r "echo json_encode(['status' => 'OK', 'extensions' => get_loaded_extensions()]);"
+      
+      - name: Package PHP Portable
+        run: |
+          cd /opt
+          tar -czf /tmp/php8-portable-rhel9.tar.gz php8/
+          
+          # Include Oracle libraries
+          cd /
+          tar -czf /tmp/oracle-instantclient-rhel9.tar.gz usr/lib/oracle/
+          
+          # Combine
+          mkdir -p /tmp/final
+          cd /tmp/final
+          tar -xzf /tmp/php8-portable-rhel9.tar.gz
+          tar -xzf /tmp/oracle-instantclient-rhel9.tar.gz
+          
+          tar -czf /tmp/php8-complete-portable-rhel9.tar.gz *
+          
+          ls -lh /tmp/php8-complete-portable-rhel9.tar.gz
+      
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: php8-portable-rhel9-${{ inputs.php_version }}
+          path: /tmp/php8-complete-portable-rhel9.tar.gz
+          retention-days: 30
+      
+      - name: Create Release Info
+        run: |
+          cat > /tmp/README.txt << 'EOF'
+          PHP 8 Portable for RHEL 9
+          ==========================
+          
+          Cara Penggunaan:
+          
+          1. Extract archive:
+             tar -xzf php8-complete-portable-rhel9.tar.gz
+          
+          2. Test PHP:
+             ./php8/run-php.sh -v
+          
+          3. Gunakan PHP:
+             ./php8/run-php.sh script.php
+          
+          Ekstensi yang sudah include:
+          - MySQL/MySQLi/PDO MySQL
+          - PostgreSQL/PDO PostgreSQL
+          - Oracle OCI8/PDO OCI
+          - GD (image processing)
+          - cURL
+          - JSON (built-in)
+          - Base64 functions (built-in)
+          
+          Konfigurasi:
+          - php.ini located at: php8/bin/php.ini
+          - Edit sesuai kebutuhan
+          
+          Dependencies:
+          - Oracle Instant Client sudah include di usr/lib/oracle/
+          
+          Environment Variables (sudah di-handle oleh run-php.sh):
+          - LD_LIBRARY_PATH
+          - PHPRC
+          EOF
+          
+          cat /tmp/README.txt
+      
+      - name: Upload README
+        uses: actions/upload-artifact@v4
+        with:
+          name: README
+          path: /tmp/README.txt
+          retention-days: 30
