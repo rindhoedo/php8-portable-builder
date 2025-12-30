@@ -18,11 +18,17 @@ jobs:
     steps:
       - name: Install Build Dependencies
         run: |
+          # Enable CodeReady Builder and EPEL repositories
+          dnf install -y oracle-epel-release-el9
+          dnf config-manager --set-enabled ol9_codeready_builder
+          
+          # Install dependencies
           dnf install -y gcc gcc-c++ make autoconf automake libtool \
             libxml2-devel openssl-devel sqlite-devel \
             libcurl-devel libpng-devel libjpeg-devel \
             freetype-devel oniguruma-devel libzip-devel \
-            postgresql-devel readline-devel wget tar gzip bzip2
+            postgresql-devel readline-devel wget tar gzip bzip2 \
+            diffutils file
       
       - name: Download PHP Source
         run: |
