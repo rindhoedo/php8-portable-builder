@@ -16,40 +16,35 @@ jobs:
       image: rockylinux:8
     
     steps:
+
       - name: Install Build Dependencies
         run: |
-          # Enable PowerTools and EPEL
           dnf install -y epel-release
           dnf config-manager --set-enabled powertools
-          
-          # Install all dependencies
+
+          # Core toolchain & build tools
           dnf install -y gcc gcc-c++ make autoconf automake libtool \
-            libxml2-devel openssl-devel sqlite-devel \
-            libcurl-devel libpng-devel libjpeg-devel \
-            freetype-devel postgresql-devel readline-devel \
-            oniguruma-devel libzip-devel \
-            wget tar gzip bzip2 pkgconfig cmake bison re2c \
-            diffutils file patch
-          
+            bison re2c cmake pkgconfig diffutils file patch
+
+          # PHP headers & libs
+          dnf install -y libxml2-devel openssl-devel sqlite-devel \
+            libcurl-devel libpng-devel libjpeg-turbo-devel freetype-devel \
+            postgresql-devel readline-devel oniguruma-devel libzip-devel \
+            mariadb-connector-c-devel
+
           echo "GCC Version:"
           gcc --version
-      
-      - name: Download PHP Source
-        run: |
-          cd /tmp
-          wget https://www.php.net/distributions/php-${{ inputs.php_version }}.tar.gz
-          tar -xzf php-${{ inputs.php_version }}.tar.gz
-      
+
       - name: Configure PHP
         run: |
           cd /tmp/php-${{ inputs.php_version }}
-          
-          # Configure with proper flags
-          CFLAGS="-fPIC" \
-          CXXFLAGS="-fPIC" \
-          LDFLAGS="-Wl,-z,now" \
+
+          CFLAGS="-O2 -fPIE -fno-ifunc" \
+          CXXFLAGS="-O2 -fPIE -fno-ifunc" \
+          LDFLAGS="-pie -Wl,-z,now" \
           ./configure \
             --prefix=/opt/php8 \
+            --with-libdir=lib64 \
             --enable-mbstring \
             --enable-bcmath \
             --enable-sockets \
@@ -64,34 +59,32 @@ jobs:
             --with-pgsql \
             --with-mysqli \
             --enable-pcntl \
+            --enable-opcache \
             --disable-cgi \
             --disable-pdo \
             --disable-phpdbg \
             --without-pear
-      
+
       - name: Compile PHP
         run: |
           cd /tmp/php-${{ inputs.php_version }}
-          make -j$(nproc)
-      
+          make -j"$(nproc)"
+
       - name: Install PHP
         run: |
           cd /tmp/php-${{ inputs.php_version }}
           make install
-          
-          # Copy shared libraries
+
           mkdir -p /opt/php8/lib
-          
-          # Copy oniguruma
+
+          # Runtime libs (adjust as needed)
           cp -L /usr/lib64/libonig.so* /opt/php8/lib/ 2>/dev/null || true
-          
-          # Copy libzip  
-          cp -L /usr/lib64/libzip.so* /opt/php8/lib/ 2>/dev/null || true
-          
-          echo ""
+          cp -L /usr/lib64/libzip.so*  /opt/php8/lib/ 2>/dev/null || true
+          cp -L /usr/lib64/libpq.so*   /opt/php8/lib/ 2>/dev/null || true
+          cp -L /usr/lib64/libmariadb.so* /opt/php8/lib/ 2>/dev/null || true
+
           echo "=== PHP Binary Dependencies ==="
-          ldd /opt/php8/bin/php | head -20
-      
+          ldd /opt/php8/bin/php | head -40      
       - name: Configure php.ini
         run: |
           cd /tmp/php-${{ inputs.php_version }}
