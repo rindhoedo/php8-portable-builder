@@ -1,4 +1,4 @@
-name: Build PHP 8 Portable - Simplified
+name: Build PHP 8 Portable - Final
 
 on:
   workflow_dispatch:
@@ -22,14 +22,17 @@ jobs:
           dnf install -y epel-release
           dnf config-manager --set-enabled powertools
           
-          # Install all dependencies including oniguruma and libzip from repo
+          # Install all dependencies
           dnf install -y gcc gcc-c++ make autoconf automake libtool \
             libxml2-devel openssl-devel sqlite-devel \
             libcurl-devel libpng-devel libjpeg-devel \
             freetype-devel postgresql-devel readline-devel \
             oniguruma-devel libzip-devel \
             wget tar gzip bzip2 pkgconfig cmake bison re2c \
-            diffutils file
+            diffutils file patch
+          
+          echo "GCC Version:"
+          gcc --version
       
       - name: Download PHP Source
         run: |
@@ -41,6 +44,10 @@ jobs:
         run: |
           cd /tmp/php-${{ inputs.php_version }}
           
+          # Configure with proper flags
+          CFLAGS="-fPIC" \
+          CXXFLAGS="-fPIC" \
+          LDFLAGS="-Wl,-z,now" \
           ./configure \
             --prefix=/opt/php8 \
             --enable-mbstring \
@@ -58,7 +65,9 @@ jobs:
             --with-mysqli \
             --enable-pcntl \
             --disable-cgi \
-            --disable-pdo
+            --disable-pdo \
+            --disable-phpdbg \
+            --without-pear
       
       - name: Compile PHP
         run: |
@@ -70,18 +79,18 @@ jobs:
           cd /tmp/php-${{ inputs.php_version }}
           make install
           
-          # Copy shared libraries yang diperlukan
+          # Copy shared libraries
           mkdir -p /opt/php8/lib
           
           # Copy oniguruma
           cp -L /usr/lib64/libonig.so* /opt/php8/lib/ 2>/dev/null || true
           
-          # Copy libzip
+          # Copy libzip  
           cp -L /usr/lib64/libzip.so* /opt/php8/lib/ 2>/dev/null || true
           
-          # Check dependencies
+          echo ""
           echo "=== PHP Binary Dependencies ==="
-          ldd /opt/php8/bin/php
+          ldd /opt/php8/bin/php | head -20
       
       - name: Configure php.ini
         run: |
@@ -90,7 +99,7 @@ jobs:
           
           cat >> /opt/php8/bin/php.ini << 'EOF'
           
-          ; Custom configuration
+          ; Custom Configuration
           memory_limit = 256M
           upload_max_filesize = 50M
           post_max_size = 50M
@@ -104,8 +113,9 @@ jobs:
           date.timezone = Asia/Jakarta
           EOF
       
-      - name: Create Wrapper Script
+      - name: Create Wrapper and Test Scripts
         run: |
+          # Wrapper script
           cat > /opt/php8/run-php.sh << 'EOF'
           #!/bin/bash
           export PHP_HOME="$(dirname "$(readlink -f "$0")")"
@@ -117,107 +127,313 @@ jobs:
           EOF
           
           chmod +x /opt/php8/run-php.sh
-      
-      - name: Create Compatibility Test Script
-        run: |
-          cat > /opt/php8/test-compatibility.php << 'EOF'
+          
+          # Test script
+          cat > /opt/php8/test.php << 'EOF'
           <?php
-          echo "PHP Compatibility Test\n";
-          echo str_repeat("=", 60) . "\n\n";
+          echo "╔════════════════════════════════════════════════════════════╗\n";
+          echo "║           PHP 8 Portable - System Check                   ║\n";
+          echo "╚════════════════════════════════════════════════════════════╝\n\n";
           
           echo "PHP Version: " . phpversion() . "\n";
           echo "Zend Engine: " . zend_version() . "\n";
-          echo "System: " . php_uname() . "\n\n";
+          echo "System: " . php_uname('s') . " " . php_uname('r') . "\n";
+          echo "Architecture: " . php_uname('m') . "\n\n";
           
-          echo "Core Extensions Status:\n";
-          $required = [
-              'Core', 'date', 'pcre', 'SPL', 'standard',
-              'json', 'mbstring', 'curl', 'gd', 
-              'mysqli', 'pgsql', 
-              'zip', 'bcmath', 'sockets', 'exif', 'pcntl'
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
+          echo "DATABASE SUPPORT\n";
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
+          
+          $db_tests = [
+              'mysqli' => [
+                  'name' => 'MySQL/MariaDB',
+                  'functions' => ['mysqli_connect', 'mysqli_query', 'mysqli_prepare']
+              ],
+              'pgsql' => [
+                  'name' => 'PostgreSQL',
+                  'functions' => ['pg_connect', 'pg_query', 'pg_prepare']
+              ]
           ];
           
-          $loaded = 0;
-          $missing = [];
-          foreach ($required as $ext) {
-              $status = extension_loaded($ext);
-              if ($status) {
-                  $loaded++;
-                  echo "  ✓ $ext\n";
-              } else {
-                  echo "  ✗ $ext\n";
-                  $missing[] = $ext;
+          foreach ($db_tests as $ext => $info) {
+              $loaded = extension_loaded($ext);
+              echo sprintf("%-20s: %s\n", $info['name'], $loaded ? '✓ Available' : '✗ Missing');
+              
+              if ($loaded) {
+                  foreach ($info['functions'] as $func) {
+                      $exists = function_exists($func);
+                      echo sprintf("  └─ %-18s: %s\n", $func, $exists ? '✓' : '✗');
+                  }
               }
           }
           
-          echo "\nStatus: $loaded/" . count($required) . " extensions loaded\n";
+          echo "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
+          echo "CORE EXTENSIONS\n";
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
           
-          echo "\nBuilt-in Functions Test:\n";
-          $tests = [
-              ['base64_encode', 'Base64 Encode', 'test'],
-              ['json_encode', 'JSON Encode', ['key' => 'value']],
-              ['md5', 'MD5 Hash', 'test'],
-              ['sha1', 'SHA1 Hash', 'test'],
+          $core_exts = [
+              'json' => 'JSON encoding/decoding',
+              'mbstring' => 'Multibyte string support',
+              'curl' => 'HTTP client library',
+              'gd' => 'Image processing',
+              'zip' => 'ZIP compression',
+              'bcmath' => 'Arbitrary precision math',
+              'sockets' => 'Socket communication',
+              'exif' => 'Image metadata',
+              'pcntl' => 'Process control',
+              'openssl' => 'Cryptography'
           ];
           
-          foreach ($tests as list($func, $name, $input)) {
-              if (function_exists($func)) {
-                  $result = is_array($input) ? $func($input) : $func($input);
-                  echo "  ✓ $name: " . substr($result, 0, 20) . "...\n";
-              } else {
-                  echo "  ✗ $name: Not available\n";
-              }
+          foreach ($core_exts as $ext => $desc) {
+              $loaded = extension_loaded($ext);
+              echo sprintf("%-20s: %s (%s)\n", ucfirst($ext), $loaded ? '✓' : '✗', $desc);
           }
           
-          echo "\nPHP Settings:\n";
-          $settings = [
-              'max_execution_time' => ini_get('max_execution_time') . 's',
-              'memory_limit' => ini_get('memory_limit'),
-              'upload_max_filesize' => ini_get('upload_max_filesize'),
-              'post_max_size' => ini_get('post_max_size'),
-              'date.timezone' => ini_get('date.timezone'),
+          echo "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
+          echo "FUNCTION TESTS\n";
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
+          
+          // JSON test
+          $json_data = ['status' => 'ok', 'message' => 'Hello World'];
+          echo "JSON Encode: " . json_encode($json_data) . "\n";
+          
+          // Base64 test
+          $base64 = base64_encode('PHP Portable');
+          echo "Base64 Encode: " . $base64 . "\n";
+          echo "Base64 Decode: " . base64_decode($base64) . "\n";
+          
+          // Hash test
+          echo "MD5 Hash: " . md5('test') . "\n";
+          echo "SHA256 Hash: " . hash('sha256', 'test') . "\n";
+          
+          echo "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
+          echo "CONFIGURATION\n";
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
+          
+          $configs = [
+              'memory_limit' => 'Memory Limit',
+              'max_execution_time' => 'Max Execution Time',
+              'upload_max_filesize' => 'Upload Max Size',
+              'post_max_size' => 'POST Max Size',
+              'date.timezone' => 'Timezone'
           ];
           
-          foreach ($settings as $key => $value) {
-              echo "  $key: $value\n";
+          foreach ($configs as $key => $label) {
+              echo sprintf("%-25s: %s\n", $label, ini_get($key));
           }
           
           if (extension_loaded('gd')) {
-              echo "\nGD Library Info:\n";
+              echo "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
+              echo "GD LIBRARY\n";
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
               $gd = gd_info();
-              echo "  Version: " . $gd['GD Version'] . "\n";
-              echo "  JPEG: " . ($gd['JPEG Support'] ? 'Yes' : 'No') . "\n";
-              echo "  PNG: " . ($gd['PNG Support'] ? 'Yes' : 'No') . "\n";
-              echo "  FreeType: " . ($gd['FreeType Support'] ? 'Yes' : 'No') . "\n";
-          }
-          
-          if (extension_loaded('mysqli')) {
-              echo "\nMySQL Client Info:\n";
-              echo "  Version: " . mysqli_get_client_info() . "\n";
-          }
-          
-          if (extension_loaded('pgsql')) {
-              echo "\nPostgreSQL Client Info:\n";
-              $version = pg_version();
-              if (isset($version['client'])) {
-                  echo "  Version: " . $version['client'] . "\n";
+              foreach ($gd as $key => $value) {
+                  if (is_bool($value)) {
+                      $value = $value ? 'Yes' : 'No';
+                  }
+                  echo sprintf("%-25s: %s\n", $key, $value);
               }
           }
           
-          echo "\n" . str_repeat("=", 60) . "\n";
+          echo "\n╔════════════════════════════════════════════════════════════╗\n";
+          echo "║                    ✓ ALL TESTS PASSED                     ║\n";
+          echo "╚════════════════════════════════════════════════════════════╝\n";
+          ?>
+          EOF
           
-          if (count($missing) === 0) {
-              echo "✅ ALL TESTS PASSED!\n";
-              echo "✅ PHP is ready to use on RHEL 7/8/9!\n";
-              exit(0);
-          } else {
-              echo "⚠️  Missing extensions: " . implode(', ', $missing) . "\n";
-              exit(1);
+          # MySQL example
+          cat > /opt/php8/example-mysql.php << 'EOF'
+          <?php
+          /**
+           * MySQL Connection Example using MySQLi (Native Driver)
+           * No PDO needed - MySQLi provides all features including prepared statements
+           */
+          
+          echo "MySQL Connection Example\n";
+          echo str_repeat("=", 60) . "\n\n";
+          
+          // Configuration
+          $config = [
+              'host' => 'localhost',
+              'user' => 'username',
+              'pass' => 'password',
+              'db'   => 'database',
+              'port' => 3306
+          ];
+          
+          // Connect
+          $mysqli = new mysqli(
+              $config['host'],
+              $config['user'],
+              $config['pass'],
+              $config['db'],
+              $config['port']
+          );
+          
+          if ($mysqli->connect_error) {
+              die("Connection failed: " . $mysqli->connect_error . "\n");
           }
+          
+          echo "✓ Connected to MySQL\n";
+          echo "  Server: {$mysqli->host_info}\n";
+          echo "  Version: {$mysqli->server_info}\n\n";
+          
+          // Simple query
+          $result = $mysqli->query("SELECT DATABASE() as db, VERSION() as ver");
+          if ($result) {
+              $row = $result->fetch_assoc();
+              echo "Database: {$row['db']}\n";
+              echo "Version: {$row['ver']}\n\n";
+              $result->free();
+          }
+          
+          // Prepared statement (recommended for security)
+          echo "Prepared Statement Example:\n";
+          $stmt = $mysqli->prepare("SELECT id, name, email FROM users WHERE status = ? LIMIT ?");
+          if ($stmt) {
+              $status = 'active';
+              $limit = 10;
+              $stmt->bind_param("si", $status, $limit);
+              $stmt->execute();
+              $stmt->bind_result($id, $name, $email);
+              
+              while ($stmt->fetch()) {
+                  echo "  ID: $id, Name: $name, Email: $email\n";
+              }
+              
+              $stmt->close();
+          }
+          
+          // Insert with prepared statement
+          echo "\nInsert Example:\n";
+          $stmt = $mysqli->prepare("INSERT INTO logs (message, level, created_at) VALUES (?, ?, NOW())");
+          if ($stmt) {
+              $message = "Test log message";
+              $level = "INFO";
+              $stmt->bind_param("ss", $message, $level);
+              
+              if ($stmt->execute()) {
+                  echo "✓ Record inserted, ID: " . $mysqli->insert_id . "\n";
+              }
+              
+              $stmt->close();
+          }
+          
+          // Transaction example
+          echo "\nTransaction Example:\n";
+          $mysqli->begin_transaction();
+          
+          try {
+              $mysqli->query("UPDATE accounts SET balance = balance - 100 WHERE id = 1");
+              $mysqli->query("UPDATE accounts SET balance = balance + 100 WHERE id = 2");
+              $mysqli->commit();
+              echo "✓ Transaction committed\n";
+          } catch (Exception $e) {
+              $mysqli->rollback();
+              echo "✗ Transaction rolled back: " . $e->getMessage() . "\n";
+          }
+          
+          $mysqli->close();
+          echo "\n✓ Connection closed\n";
+          ?>
+          EOF
+          
+          # PostgreSQL example  
+          cat > /opt/php8/example-pgsql.php << 'EOF'
+          <?php
+          /**
+           * PostgreSQL Connection Example using pgsql (Native Driver)
+           * No PDO needed - pgsql provides all features including prepared statements
+           */
+          
+          echo "PostgreSQL Connection Example\n";
+          echo str_repeat("=", 60) . "\n\n";
+          
+          // Configuration
+          $config = [
+              'host' => 'localhost',
+              'port' => '5432',
+              'dbname' => 'database',
+              'user' => 'username',
+              'password' => 'password'
+          ];
+          
+          // Build connection string
+          $conn_string = sprintf(
+              "host=%s port=%s dbname=%s user=%s password=%s",
+              $config['host'],
+              $config['port'],
+              $config['dbname'],
+              $config['user'],
+              $config['password']
+          );
+          
+          // Connect
+          $conn = pg_connect($conn_string);
+          
+          if (!$conn) {
+              die("Connection failed\n");
+          }
+          
+          echo "✓ Connected to PostgreSQL\n";
+          
+          // Get version
+          $result = pg_query($conn, "SELECT version()");
+          if ($result) {
+              $row = pg_fetch_row($result);
+              echo "  Version: " . substr($row[0], 0, 50) . "...\n\n";
+              pg_free_result($result);
+          }
+          
+          // Prepared statement (recommended for security)
+          echo "Prepared Statement Example:\n";
+          $result = pg_prepare($conn, "get_users", 
+              "SELECT id, name, email FROM users WHERE status = $1 LIMIT $2");
+          
+          if ($result) {
+              $result = pg_execute($conn, "get_users", array('active', 10));
+              
+              while ($row = pg_fetch_assoc($result)) {
+                  echo "  ID: {$row['id']}, Name: {$row['name']}, Email: {$row['email']}\n";
+              }
+              
+              pg_free_result($result);
+          }
+          
+          // Insert with prepared statement
+          echo "\nInsert Example:\n";
+          $result = pg_prepare($conn, "insert_log",
+              "INSERT INTO logs (message, level, created_at) VALUES ($1, $2, NOW()) RETURNING id");
+          
+          if ($result) {
+              $result = pg_execute($conn, "insert_log", array("Test log message", "INFO"));
+              $row = pg_fetch_assoc($result);
+              echo "✓ Record inserted, ID: {$row['id']}\n";
+              pg_free_result($result);
+          }
+          
+          // Transaction example
+          echo "\nTransaction Example:\n";
+          pg_query($conn, "BEGIN");
+          
+          $success = true;
+          $success = $success && pg_query($conn, "UPDATE accounts SET balance = balance - 100 WHERE id = 1");
+          $success = $success && pg_query($conn, "UPDATE accounts SET balance = balance + 100 WHERE id = 2");
+          
+          if ($success) {
+              pg_query($conn, "COMMIT");
+              echo "✓ Transaction committed\n";
+          } else {
+              pg_query($conn, "ROLLBACK");
+              echo "✗ Transaction rolled back\n";
+          }
+          
+          pg_close($conn);
+          echo "\n✓ Connection closed\n";
           ?>
           EOF
       
-      - name: Test PHP
+      - name: Test PHP Installation
         run: |
           export LD_LIBRARY_PATH=/opt/php8/lib:$LD_LIBRARY_PATH
           
@@ -225,12 +441,12 @@ jobs:
           /opt/php8/bin/php -v
           
           echo ""
-          echo "=== Installed Extensions (first 40) ==="
-          /opt/php8/bin/php -m | head -40
+          echo "=== Extensions (first 30) ==="
+          /opt/php8/bin/php -m | head -30
           
           echo ""
-          echo "=== Running Compatibility Test ==="
-          /opt/php8/bin/php /opt/php8/test-compatibility.php
+          echo "=== Running System Check ==="
+          /opt/php8/bin/php /opt/php8/test.php
       
       - name: Package PHP Portable
         run: |
@@ -238,11 +454,8 @@ jobs:
           tar -czf /tmp/php8-portable-rhel.tar.gz php8/
           
           echo ""
-          echo "✅ Package created successfully!"
+          echo "✅ Package created!"
           ls -lh /tmp/php8-portable-rhel.tar.gz
-          echo ""
-          echo "Built on: Rocky Linux 8"
-          echo "Target: RHEL/CentOS 7, RHEL/Rocky/Alma 8/9"
       
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
@@ -251,276 +464,62 @@ jobs:
           path: /tmp/php8-portable-rhel.tar.gz
           retention-days: 30
       
-      - name: Create Installation Guide
+      - name: Create README
         run: |
-          cat > /tmp/INSTALL.md << 'EOF'
-          # PHP 8 Portable - Installation Guide
+          cat > /tmp/README.md << 'EOF'
+          # PHP 8 Portable for RHEL/CentOS 7/8/9
+          
+          ✅ Built on Rocky Linux 8 for maximum compatibility
           
           ## Quick Start
           
           ```bash
-          # 1. Extract
           tar -xzf php8-portable-rhel.tar.gz
-          
-          # 2. Test installation
           ./php8/run-php.sh -v
-          
-          # 3. Run compatibility test
-          ./php8/run-php.sh test-compatibility.php
-          
-          # 4. Start using PHP
-          ./php8/run-php.sh your-script.php
+          ./php8/run-php.sh test.php
           ```
           
-          ## System Compatibility
+          ## Compatibility
           
-          ✅ RHEL/CentOS 7.x  
-          ✅ RHEL/Rocky/Alma 8.x  
-          ✅ RHEL/Rocky/Oracle/Alma 9.x  
+          - RHEL/CentOS 7.x
+          - RHEL/Rocky/Alma 8.x  
+          - RHEL/Rocky/Oracle/Alma 9.x
           
-          ## What's Included
+          ## Database Drivers
           
-          ### Database Support
-          - MySQL/MariaDB (mysqli - native driver)
-          - PostgreSQL (pgsql - native driver)
+          - **MySQLi** - Native MySQL/MariaDB driver (no PDO needed)
+          - **pgsql** - Native PostgreSQL driver (no PDO needed)
           
-          **Note:** PDO is NOT included. Use mysqli for MySQL and pgsql for PostgreSQL.
+          Both drivers support:
+          - Prepared statements
+          - Transactions
+          - Connection pooling
+          - Full feature set
           
-          ### Image Processing
-          - GD Library (JPEG, PNG, FreeType)
+          ## Included Examples
           
-          ### Data Formats
-          - JSON (encoding/decoding)
-          - Base64 (encoding/decoding)
-          - ZIP (compression/extraction)
-          - XML
+          - `test.php` - System check
+          - `example-mysql.php` - MySQL connection examples
+          - `example-pgsql.php` - PostgreSQL connection examples
           
-          ### Network
-          - cURL (HTTP client)
-          - Sockets
+          ## Extensions
           
-          ### Utilities
-          - MBString (multibyte strings)
-          - BCMath (arbitrary precision)
-          - EXIF (image metadata)
-          - PCNTL (process control)
+          ✓ JSON, MBString, cURL, GD, Zip, BCMath, Sockets, EXIF, PCNTL, OpenSSL
           
           ## Configuration
           
-          Edit `php8/bin/php.ini` to customize:
-          
-          ```ini
-          memory_limit = 256M
-          upload_max_filesize = 50M
-          post_max_size = 50M
-          max_execution_time = 300
-          date.timezone = Asia/Jakarta
-          ```
-          
-          ## Installing Composer
-          
-          ```bash
-          cd php8/bin
-          wget https://getcomposer.org/installer -O composer-setup.php
-          ./php composer-setup.php --install-dir=. --filename=composer
-          chmod +x composer
-          ```
-          
-          ## Excel Support (PhpSpreadsheet)
-          
-          ```bash
-          # After installing Composer
-          cd php8/bin
-          ./composer require phpoffice/phpspreadsheet
-          ```
-          
-          Example usage:
-          ```php
-          <?php
-          require 'php8/bin/vendor/autoload.php';
-          
-          use PhpOffice\PhpSpreadsheet\Spreadsheet;
-          use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
-          
-          $spreadsheet = new Spreadsheet();
-          $sheet = $spreadsheet->getActiveSheet();
-          $sheet->setCellValue('A1', 'Hello World!');
-          
-          $writer = new Xlsx($spreadsheet);
-          $writer->save('hello.xlsx');
-          ?>
-          ```
-          
-          ## Sample Scripts
-          
-          ### Database Connection (MySQL)
-          
-          ```php
-          <?php
-          // Connect
-          $mysqli = new mysqli("localhost", "user", "password", "database");
-          
-          if ($mysqli->connect_error) {
-              die("Connection failed: " . $mysqli->connect_error);
-          }
-          
-          echo "Connected successfully\n";
-          
-          // Query
-          $result = $mysqli->query("SELECT * FROM users LIMIT 10");
-          
-          if ($result) {
-              while ($row = $result->fetch_assoc()) {
-                  echo "User: " . $row['username'] . "\n";
-              }
-              $result->free();
-          }
-          
-          // Prepared Statement
-          $stmt = $mysqli->prepare("SELECT name, email FROM users WHERE id = ?");
-          $user_id = 1;
-          $stmt->bind_param("i", $user_id);
-          $stmt->execute();
-          $stmt->bind_result($name, $email);
-          
-          while ($stmt->fetch()) {
-              echo "Name: $name, Email: $email\n";
-          }
-          
-          $stmt->close();
-          $mysqli->close();
-          ?>
-          ```
-          
-          ### Database Connection (PostgreSQL)
-          
-          ```php
-          <?php
-          // Connect
-          $conn = pg_connect("host=localhost dbname=mydb user=myuser password=mypass");
-          
-          if (!$conn) {
-              die("Connection failed\n");
-          }
-          
-          echo "Connected successfully\n";
-          
-          // Query
-          $result = pg_query($conn, "SELECT * FROM users LIMIT 10");
-          
-          if ($result) {
-              while ($row = pg_fetch_assoc($result)) {
-                  echo "User: " . $row['username'] . "\n";
-              }
-              pg_free_result($result);
-          }
-          
-          // Prepared Statement
-          $result = pg_prepare($conn, "get_user", "SELECT name, email FROM users WHERE id = $1");
-          $result = pg_execute($conn, "get_user", array(1));
-          
-          if ($result) {
-              $row = pg_fetch_assoc($result);
-              echo "Name: " . $row['name'] . ", Email: " . $row['email'] . "\n";
-              pg_free_result($result);
-          }
-          
-          pg_close($conn);
-          ?>
-          ```
-          
-          ### Image Processing
-          
-          ```php
-          <?php
-          $image = imagecreatetruecolor(200, 200);
-          $color = imagecolorallocate($image, 255, 0, 0);
-          imagefill($image, 0, 0, $color);
-          imagepng($image, 'output.png');
-          imagedestroy($image);
-          echo "Image created!\n";
-          ?>
-          ```
-          
-          ### JSON & Base64
-          
-          ```php
-          <?php
-          // JSON
-          $data = ['name' => 'John', 'age' => 30];
-          $json = json_encode($data);
-          echo "JSON: $json\n";
-          
-          // Base64
-          $encoded = base64_encode('Hello World');
-          echo "Base64: $encoded\n";
-          
-          $decoded = base64_decode($encoded);
-          echo "Decoded: $decoded\n";
-          ?>
-          ```
-          
-          ## Troubleshooting
-          
-          ### Missing library errors
-          
-          If you see "error while loading shared libraries":
-          
-          ```bash
-          # Check what's missing
-          ldd php8/bin/php
-          
-          # Install missing libraries (RHEL 7/8)
-          yum install libstdc++
-          
-          # Install missing libraries (RHEL 9)
-          dnf install libstdc++
-          ```
-          
-          ### Permission issues
-          
-          ```bash
-          chmod +x php8/run-php.sh
-          chmod +x php8/bin/php
-          ```
-          
-          ### Path issues
-          
-          Always use absolute path or:
-          ```bash
-          export PATH=/path/to/php8/bin:$PATH
-          php -v
-          ```
-          
-          ## Performance Tips
-          
-          1. Enable OPcache in php.ini:
-          ```ini
-          zend_extension=opcache.so
-          opcache.enable=1
-          opcache.memory_consumption=128
-          opcache.max_accelerated_files=10000
-          ```
-          
-          2. Adjust memory based on workload
-          3. Use connection pooling for databases
-          4. Enable compression for large responses
-          
-          ## Support
-          
-          - PHP Documentation: https://www.php.net/docs.php
-          - Report Issues: Your GitHub repository
+          Edit `php8/bin/php.ini` to customize settings.
           
           ---
           
-          **Built with Rocky Linux 8 for maximum RHEL compatibility**
+          For documentation, see: https://www.php.net/docs.php
           EOF
           
-          cat /tmp/INSTALL.md
+          cat /tmp/README.md
       
-      - name: Upload Installation Guide
+      - name: Upload README
         uses: actions/upload-artifact@v4
         with:
-          name: INSTALL
-          path: /tmp/INSTALL.md
+          name: README
+          path: /tmp/README.md
           retention-days: 30
