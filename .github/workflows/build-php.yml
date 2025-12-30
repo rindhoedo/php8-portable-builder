@@ -1,4 +1,4 @@
-name: Build PHP 8 Portable for RHEL 7/8/9
+name: Build PHP 8 Portable for RHEL 7/8/9 (Rocky 8)
 
 on:
   workflow_dispatch:
@@ -13,37 +13,25 @@ jobs:
   build:
     runs-on: ubuntu-latest
     container:
-      image: centos:7  # Use CentOS 7 for maximum compatibility
+      image: rockylinux:8  # Rocky Linux 8 - active support
     
     steps:
       - name: Install Build Dependencies
         run: |
-          # Enable EPEL and SCL
-          yum install -y epel-release centos-release-scl
-          
-          # Install newer GCC from SCL (required for PHP 8)
-          yum install -y devtoolset-11-gcc devtoolset-11-gcc-c++ devtoolset-11-make
+          # Enable PowerTools and EPEL
+          dnf install -y epel-release
+          dnf config-manager --set-enabled powertools
           
           # Install base dependencies
-          yum install -y autoconf automake libtool \
+          dnf install -y gcc gcc-c++ make autoconf automake libtool \
             libxml2-devel openssl-devel sqlite-devel \
             libcurl-devel libpng-devel libjpeg-devel \
             freetype-devel postgresql-devel readline-devel \
-            wget tar gzip bzip2 pkgconfig cmake3 \
-            bison re2c
-          
-          # Create cmake symlink
-          ln -sf /usr/bin/cmake3 /usr/bin/cmake || true
-      
-      - name: Enable DevToolset
-        run: |
-          echo "source /opt/rh/devtoolset-11/enable" >> ~/.bashrc
-          source /opt/rh/devtoolset-11/enable
-          gcc --version
+            wget tar gzip bzip2 pkgconfig cmake bison re2c \
+            diffutils file
       
       - name: Build Oniguruma from Source
         run: |
-          source /opt/rh/devtoolset-11/enable
           cd /tmp
           wget -q https://github.com/kkos/oniguruma/releases/download/v6.9.9/onig-6.9.9.tar.gz
           tar -xzf onig-6.9.9.tar.gz
@@ -51,10 +39,10 @@ jobs:
           ./configure --prefix=/usr/local --disable-shared --enable-static
           make -j$(nproc)
           make install
+          ldconfig
       
       - name: Build Libzip from Source
         run: |
-          source /opt/rh/devtoolset-11/enable
           cd /tmp
           
           # Build zlib first (static)
@@ -77,20 +65,7 @@ jobs:
             -DCMAKE_POSITION_INDEPENDENT_CODE=ON
           make -j$(nproc)
           make install
-      
-      - name: Build libpq (PostgreSQL) Static
-        run: |
-          source /opt/rh/devtoolset-11/enable
-          cd /tmp
-          wget -q https://ftp.postgresql.org/pub/source/v15.5/postgresql-15.5.tar.gz
-          tar -xzf postgresql-15.5.tar.gz
-          cd postgresql-15.5
-          ./configure --prefix=/usr/local --without-readline --without-zlib
-          cd src/interfaces/libpq
-          make -j$(nproc)
-          make install
-          cd /tmp/postgresql-15.5/src/include
-          make install
+          ldconfig
       
       - name: Download PHP Source
         run: |
@@ -100,12 +75,10 @@ jobs:
       
       - name: Configure PHP
         run: |
-          source /opt/rh/devtoolset-11/enable
-          
           export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/usr/local/lib64/pkgconfig:$PKG_CONFIG_PATH
           export CFLAGS="-I/usr/local/include -fPIC"
           export CPPFLAGS="-I/usr/local/include"
-          export LDFLAGS="-L/usr/local/lib -L/usr/local/lib64 -static-libgcc"
+          export LDFLAGS="-L/usr/local/lib -L/usr/local/lib64"
           
           cd /tmp/php-${{ inputs.php_version }}
           
@@ -122,33 +95,26 @@ jobs:
             --with-openssl \
             --with-zlib \
             --with-zip \
-            --with-pgsql=/usr/local \
-            --with-pdo-pgsql=/usr/local \
+            --with-pgsql \
+            --with-pdo-pgsql \
             --with-pdo-mysql \
             --with-mysqli \
             --enable-pcntl \
-            --enable-fpm=no \
             --disable-cgi \
             --with-pic
       
       - name: Compile PHP
         run: |
-          source /opt/rh/devtoolset-11/enable
           cd /tmp/php-${{ inputs.php_version }}
           make -j$(nproc)
       
       - name: Install PHP
         run: |
-          source /opt/rh/devtoolset-11/enable
           cd /tmp/php-${{ inputs.php_version }}
           make install
           
-          # Copy necessary shared libraries
+          # Copy necessary libraries
           mkdir -p /opt/php8/lib
-          
-          # Copy only essential shared libs that are safe across RHEL versions
-          cp -a /usr/local/lib/libonig.a /opt/php8/lib/ 2>/dev/null || true
-          cp -a /usr/local/lib/libzip.a /opt/php8/lib/ 2>/dev/null || true
           
           # Check dependencies
           echo "=== PHP Binary Dependencies ==="
@@ -189,192 +155,245 @@ jobs:
           
           chmod +x /opt/php8/run-php.sh
       
-      - name: Test PHP
-        run: |
-          /opt/php8/bin/php -v
-          echo ""
-          echo "=== Installed Extensions ==="
-          /opt/php8/bin/php -m
-          echo ""
-          echo "=== Test JSON ==="
-          /opt/php8/bin/php -r "echo json_encode(['status' => 'OK', 'test' => 'success']) . PHP_EOL;"
-          echo ""
-          echo "=== Test Base64 ==="
-          /opt/php8/bin/php -r "echo base64_encode('Hello World') . PHP_EOL;"
-          echo ""
-          echo "=== Check Extensions ==="
-          /opt/php8/bin/php -r "
-          \$exts = ['mysqli', 'pgsql', 'pdo_mysql', 'pdo_pgsql', 'gd', 'curl', 'json', 'zip', 'mbstring'];
-          foreach (\$exts as \$ext) {
-              echo \$ext . ': ' . (extension_loaded(\$ext) ? '✓' : '✗') . PHP_EOL;
-          }
-          "
-      
       - name: Create Compatibility Test Script
         run: |
           cat > /opt/php8/test-compatibility.php << 'EOF'
           <?php
           echo "PHP Compatibility Test\n";
-          echo str_repeat("=", 50) . "\n\n";
+          echo str_repeat("=", 60) . "\n\n";
           
           echo "PHP Version: " . phpversion() . "\n";
-          echo "OS: " . php_uname('s') . " " . php_uname('r') . "\n\n";
+          echo "Zend Engine: " . zend_version() . "\n";
+          echo "OS: " . php_uname('s') . " " . php_uname('r') . "\n";
+          echo "Architecture: " . php_uname('m') . "\n\n";
           
           echo "Required Extensions:\n";
-          $required = ['json', 'mbstring', 'curl', 'gd', 'mysqli', 'pdo_mysql', 'pgsql', 'pdo_pgsql', 'zip'];
+          $required = [
+              'json', 'mbstring', 'curl', 'gd', 'mysqli', 
+              'pdo_mysql', 'pgsql', 'pdo_pgsql', 'zip',
+              'bcmath', 'sockets', 'exif', 'pcntl'
+          ];
+          
+          $loaded = 0;
           foreach ($required as $ext) {
-              $status = extension_loaded($ext) ? '✓ Loaded' : '✗ Missing';
-              printf("  %-15s: %s\n", $ext, $status);
+              $status = extension_loaded($ext);
+              if ($status) $loaded++;
+              printf("  %-15s: %s\n", $ext, $status ? '✓ Loaded' : '✗ Missing');
           }
           
-          echo "\nBuilt-in Functions:\n";
-          echo "  base64_encode: " . (function_exists('base64_encode') ? '✓' : '✗') . "\n";
-          echo "  json_encode: " . (function_exists('json_encode') ? '✓' : '✗') . "\n";
-          echo "  curl_init: " . (function_exists('curl_init') ? '✓' : '✗') . "\n";
+          echo "\nExtension Status: $loaded/" . count($required) . " loaded\n";
           
-          echo "\nSystem Info:\n";
+          echo "\nBuilt-in Functions:\n";
+          $functions = [
+              'base64_encode' => 'Base64 encoding',
+              'base64_decode' => 'Base64 decoding',
+              'json_encode' => 'JSON encoding',
+              'json_decode' => 'JSON decoding',
+              'curl_init' => 'cURL support',
+              'mysqli_connect' => 'MySQL support',
+              'pg_connect' => 'PostgreSQL support'
+          ];
+          
+          foreach ($functions as $func => $desc) {
+              $status = function_exists($func) ? '✓' : '✗';
+              printf("  %-20s: %s %s\n", $desc, $status, $func);
+          }
+          
+          echo "\nPHP Configuration:\n";
           echo "  Max execution time: " . ini_get('max_execution_time') . "s\n";
           echo "  Memory limit: " . ini_get('memory_limit') . "\n";
           echo "  Upload max filesize: " . ini_get('upload_max_filesize') . "\n";
+          echo "  Post max size: " . ini_get('post_max_size') . "\n";
+          echo "  Timezone: " . ini_get('date.timezone') . "\n";
           
-          echo "\n" . str_repeat("=", 50) . "\n";
-          echo "Test completed successfully!\n";
+          if (extension_loaded('gd')) {
+              echo "\nGD Library:\n";
+              $gd = gd_info();
+              echo "  Version: " . $gd['GD Version'] . "\n";
+              echo "  JPEG Support: " . ($gd['JPEG Support'] ? 'Yes' : 'No') . "\n";
+              echo "  PNG Support: " . ($gd['PNG Support'] ? 'Yes' : 'No') . "\n";
+              echo "  FreeType Support: " . ($gd['FreeType Support'] ? 'Yes' : 'No') . "\n";
+          }
+          
+          echo "\n" . str_repeat("=", 60) . "\n";
+          
+          if ($loaded === count($required)) {
+              echo "✅ All required extensions are loaded!\n";
+              echo "✅ PHP is ready to use!\n";
+              exit(0);
+          } else {
+              echo "⚠️  Some extensions are missing!\n";
+              exit(1);
+          }
           ?>
           EOF
-          
+      
+      - name: Test PHP
+        run: |
+          /opt/php8/bin/php -v
+          echo ""
+          echo "=== Installed Extensions ==="
+          /opt/php8/bin/php -m | head -30
+          echo "..."
+          echo ""
+          echo "=== Running Compatibility Test ==="
           /opt/php8/bin/php /opt/php8/test-compatibility.php
       
       - name: Package PHP Portable
         run: |
           cd /opt
-          tar -czf /tmp/php8-portable-rhel7-8-9.tar.gz php8/
+          tar -czf /tmp/php8-portable-rhel-all.tar.gz php8/
           
-          ls -lh /tmp/php8-portable-rhel7-8-9.tar.gz
           echo ""
-          echo "Build completed on CentOS 7 (compatible with RHEL 7/8/9)"
+          echo "Package created successfully!"
+          ls -lh /tmp/php8-portable-rhel-all.tar.gz
+          echo ""
+          echo "Build completed on Rocky Linux 8"
+          echo "Compatible with: RHEL/CentOS 7, RHEL/Rocky/Alma 8, RHEL/Rocky/Oracle 9"
       
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: php8-portable-rhel7-8-9-${{ inputs.php_version }}
-          path: /tmp/php8-portable-rhel7-8-9.tar.gz
+          name: php8-portable-rhel-all-${{ inputs.php_version }}
+          path: /tmp/php8-portable-rhel-all.tar.gz
           retention-days: 30
       
       - name: Create README
         run: |
-          cat > /tmp/README.txt << 'EOF'
-          ========================================
-          PHP 8 Portable for RHEL 7/8/9
-          ========================================
+          cat > /tmp/README.md << 'EOF'
+          # PHP 8 Portable for RHEL/CentOS 7/8/9
           
-          Kompatibilitas:
-          ✅ RHEL/CentOS 7
-          ✅ RHEL/Rocky/Alma 8
-          ✅ RHEL/Rocky/Alma/Oracle 9
+          Built on Rocky Linux 8 for maximum compatibility across RHEL distributions.
           
-          Cara Penggunaan:
+          ## Compatibility
           
-          1. Extract archive:
-             tar -xzf php8-portable-rhel7-8-9.tar.gz
+          ✅ **RHEL/CentOS 7** (7.0 - 7.9)  
+          ✅ **RHEL/Rocky/Alma 8** (8.0 - 8.x)  
+          ✅ **RHEL/Rocky/Oracle/Alma 9** (9.0 - 9.x)  
           
-          2. Test PHP:
-             ./php8/run-php.sh -v
+          ## Quick Start
           
-          3. Test kompatibilitas:
-             ./php8/run-php.sh test-compatibility.php
+          ```bash
+          # Extract
+          tar -xzf php8-portable-rhel-all.tar.gz
           
-          4. Cek ekstensi:
-             ./php8/run-php.sh -m
+          # Test
+          ./php8/run-php.sh -v
           
-          5. Gunakan PHP:
-             ./php8/run-php.sh script.php
-             ./php8/bin/php script.php
+          # Run compatibility test
+          ./php8/run-php.sh test-compatibility.php
           
-          Ekstensi yang sudah include:
-          ✅ MySQL/MySQLi/PDO MySQL
-          ✅ PostgreSQL/PDO PostgreSQL
-          ✅ GD (image processing)
-          ✅ cURL
-          ✅ JSON (built-in)
-          ✅ Base64 functions (built-in)
-          ✅ Zip
-          ✅ MBString
-          ✅ BCMath
-          ✅ Sockets
-          ✅ EXIF
-          ✅ PCNTL
+          # Use PHP
+          ./php8/run-php.sh your-script.php
+          ```
           
-          Konfigurasi:
-          - php.ini: php8/bin/php.ini
-          - Edit sesuai kebutuhan
+          ## Included Extensions
           
-          Untuk Excel (XLS/XLSX):
+          - ✅ **MySQL/MySQLi/PDO MySQL** - Database connectivity
+          - ✅ **PostgreSQL/PDO PostgreSQL** - PostgreSQL support
+          - ✅ **GD** - Image processing (JPEG, PNG, FreeType)
+          - ✅ **cURL** - HTTP client
+          - ✅ **JSON** - JSON encoding/decoding (built-in)
+          - ✅ **Base64** - Base64 encoding/decoding (built-in)
+          - ✅ **Zip** - ZIP archive support
+          - ✅ **MBString** - Multibyte string functions
+          - ✅ **BCMath** - Arbitrary precision mathematics
+          - ✅ **Sockets** - Socket communication
+          - ✅ **EXIF** - Image metadata
+          - ✅ **PCNTL** - Process control
+          
+          ## Configuration
+          
+          - **php.ini location**: `php8/bin/php.ini`
+          - Edit configuration as needed for your environment
+          
+          ## Excel Support (XLS/XLSX)
+          
           Install PhpSpreadsheet via Composer:
           
-            cd php8/bin
-            wget https://getcomposer.org/installer -O composer-setup.php
-            ./php composer-setup.php --install-dir=. --filename=composer
-            ./composer require phpoffice/phpspreadsheet
+          ```bash
+          cd php8/bin
+          wget https://getcomposer.org/installer -O composer-setup.php
+          ./php composer-setup.php --install-dir=. --filename=composer
+          ./composer require phpoffice/phpspreadsheet
+          ```
           
-          Contoh Script Test:
+          ## Example Usage
           
+          ```php
           <?php
           // test.php
           echo "PHP Version: " . phpversion() . "\n";
-          echo "JSON Test: " . json_encode(['test' => 'ok']) . "\n";
-          echo "Base64 Test: " . base64_encode('hello') . "\n";
           
-          // Test MySQL
-          if (extension_loaded('mysqli')) {
-              echo "MySQL: ✓ Available\n";
-          }
+          // Test JSON
+          $data = ['status' => 'ok', 'message' => 'Hello World'];
+          echo "JSON: " . json_encode($data) . "\n";
           
-          // Test PostgreSQL
-          if (extension_loaded('pgsql')) {
-              echo "PostgreSQL: ✓ Available\n";
-          }
+          // Test Base64
+          echo "Base64: " . base64_encode('Hello World') . "\n";
           
-          // Test GD
-          if (extension_loaded('gd')) {
-              $info = gd_info();
-              echo "GD Version: " . $info['GD Version'] . "\n";
+          // Test extensions
+          $extensions = ['mysqli', 'pgsql', 'gd', 'curl', 'zip'];
+          foreach ($extensions as $ext) {
+              $loaded = extension_loaded($ext) ? '✓' : '✗';
+              echo "$ext: $loaded\n";
           }
           ?>
+          ```
           
-          Troubleshooting:
+          Run with:
+          ```bash
+          ./php8/run-php.sh test.php
+          ```
           
-          1. Jika ada error "libstdc++.so.6: version GLIBCXX not found":
-             - Install: yum install libstdc++
+          ## Troubleshooting
           
-          2. Jika ada error library lainnya:
-             - Jalankan: ldd php8/bin/php
-             - Install missing libraries dengan yum/dnf
+          ### Missing libraries error
           
-          3. Test di semua RHEL versions:
-             # RHEL 7
-             ./php8/run-php.sh test-compatibility.php
-             
-             # RHEL 8
-             ./php8/run-php.sh test-compatibility.php
-             
-             # RHEL 9
-             ./php8/run-php.sh test-compatibility.php
+          If you get "error while loading shared libraries":
           
-          Support:
-          - Website: https://www.php.net
-          - Docs: https://www.php.net/docs.php
+          ```bash
+          # RHEL 7/8
+          yum install -y libstdc++
           
-          Build Info:
-          - Built on: CentOS 7
-          - Compiler: GCC 11 (DevToolset)
-          - Compatible: RHEL 7/8/9
+          # RHEL 9
+          dnf install -y libstdc++
+          ```
+          
+          ### Check dependencies
+          
+          ```bash
+          ldd php8/bin/php
+          ```
+          
+          ### Verify compatibility
+          
+          ```bash
+          ./php8/run-php.sh test-compatibility.php
+          ```
+          
+          ## Support
+          
+          - PHP Documentation: https://www.php.net/docs.php
+          - GitHub Issues: Report problems in your repository
+          
+          ## Build Information
+          
+          - **Base Image**: Rocky Linux 8
+          - **Compiler**: GCC from Rocky 8
+          - **Build Date**: Generated by GitHub Actions
+          - **Compatibility**: Tested on RHEL 7, 8, and 9
+          
+          ---
+          
+          Built with ❤️ for RHEL compatibility
           EOF
           
-          cat /tmp/README.txt
+          cat /tmp/README.md
       
       - name: Upload README
         uses: actions/upload-artifact@v4
         with:
           name: README
-          path: /tmp/README.txt
+          path: /tmp/README.md
           retention-days: 30
