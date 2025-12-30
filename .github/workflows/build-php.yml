@@ -1,4 +1,4 @@
-name: Build PHP 8 Portable - Final (Fixed)
+name: Build PHP 8 Portable - Final (Fixed v2)
 on:
   workflow_dispatch:
     inputs:
@@ -13,26 +13,27 @@ jobs:
     container:
       image: rockylinux:8
     steps:
-      - name: Install Build Dependencies
+      - name: Prepare & Enable Repos
         run: |
           set -euo pipefail
           dnf install -y epel-release dnf-plugins-core
           dnf config-manager --set-enabled powertools || dnf config-manager --set-enabled PowerTools || true
+      - name: Install Toolchain & Build Deps
+        run: |
+          set -euo pipefail
           dnf groupinstall -y "Development Tools"
-          dnf install -y autoconf automake libtool bison re2c cmake pkgconfig diffutils file patch wget tar gzip bzip2 which
+          dnf install -y which autoconf automake libtool bison re2c cmake pkgconfig diffutils file patch wget tar gzip bzip2
           dnf install -y glibc-devel glibc-headers libstdc++-devel kernel-headers
-          dnf install -y libxml2-devel openssl-devel sqlite-devel \
-            libcurl-devel libpng-devel libjpeg-turbo-devel freetype-devel \
-            postgresql-devel readline-devel oniguruma-devel libzip-devel \
-            mariadb-connector-c-devel
-          echo "GCC Version:"; gcc --version
-          echo "Binutils (ld):"; ld --version || true
-          echo "Kernel headers:"; rpm -q kernel-headers || true
-      - name: Sanity Check Toolchain (PIE)
+          dnf install -y libxml2-devel openssl-devel sqlite-devel libcurl-devel libpng-devel libjpeg-turbo-devel freetype-devel postgresql-devel readline-devel oniguruma-devel libzip-devel mariadb-connector-c-devel
+          ln -sf /usr/bin/gcc /usr/bin/cc
+          echo "GCC:"; gcc --version
+          echo "CC symlink:"; ls -l /usr/bin/cc
+          echo "LD:"; ld --version || true
+      - name: Sanity Check (compile & run tiny PIE program)
         run: |
           set -euo pipefail
           echo 'int main(){return 0;}' > /tmp/test.c
-          gcc -O2 -fPIE /tmp/test.c -pie -o /tmp/a.out
+          cc -O2 -fPIE /tmp/test.c -pie -o /tmp/a.out
           /tmp/a.out
       - name: Download PHP Source
         run: |
@@ -43,10 +44,16 @@ jobs:
       - name: Configure PHP
         env:
           CC: gcc
+          CXX: g++
+          AR: /usr/bin/ar
+          RANLIB: /usr/bin/ranlib
           PKG_CONFIG_PATH: /usr/lib64/pkgconfig:/usr/share/pkgconfig
         run: |
           set -euo pipefail
           cd /tmp/php-${{ inputs.php_version }}
+          export CC
+          export CXX
+          export PKG_CONFIG_PATH
           CFLAGS="-O2 -fPIE -fno-ifunc" CXXFLAGS="-O2 -fPIE -fno-ifunc" LDFLAGS="-pie -Wl,-z,now" ./configure \
             --prefix=/opt/php8 \
             --with-libdir=lib64 \
@@ -96,7 +103,7 @@ jobs:
           max_execution_time = 300
           max_input_time = 300
           display_errors = Off
-          error_reporting = E_ALL & ~E_DEPRECATED & ~E_STRICT
+          error_reporting = EALL & ~E_DEPRECATED & ~E_STRICT
           log_errors = On
           date.timezone = Asia/Jakarta
           EOF
@@ -124,29 +131,4 @@ jobs:
         with:
           name: php8-portable-rhel-${{ inputs.php_version }}
           path: /tmp/php8-portable-rhel.tar.gz
-          retention-days: 30
-      - name: Create README
-        run: |
-          set -euo pipefail
-          cat > /tmp/README.md << 'EOF'
-          # PHP 8 Portable for RHEL/Rocky/Alma 8/9
-
-          ## Quick Start
-          ```bash
-          tar -xzf php8-portable-rhel.tar.gz
-          ./php8/run-php.sh -v
-          ```
-
-          ## Included Extensions
-          JSON, MBString, cURL, GD, Zip, BCMath, Sockets, EXIF, PCNTL, OpenSSL, MySQLi, pgsql
-
-          ## Configuration
-          Edit `php8/bin/php.ini` to customize settings.
-          EOF
-          cat /tmp/README.md
-      - name: Upload README
-        uses: actions/upload-artifact@v4
-        with:
-          name: README
-          path: /tmp/README.md
           retention-days: 30
