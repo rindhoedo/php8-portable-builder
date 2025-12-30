@@ -1,58 +1,34 @@
-
-# 1
 name: Build PHP 8 Portable - Final
-
-# 5
 on:
   workflow_dispatch:
     inputs:
       php_version:
-        description: 'PHP Version'
+        description: PHP Version
         required: true
         default: '8.3.14'
         type: string
-
-# 15
 jobs:
   build:
     runs-on: ubuntu-latest
     container:
       image: rockylinux:8
-
     steps:
       - name: Install Build Dependencies
         run: |
           dnf install -y epel-release
           dnf config-manager --set-enabled powertools
-
-          # Core toolchain & build tools
-          dnf install -y gcc gcc-c++ make autoconf automake libtool \
-            bison re2c cmake pkgconfig diffutils file patch wget tar gzip bzip2
-
-          # PHP headers & libs
-          dnf install -y libxml2-devel openssl-devel sqlite-devel \
-            libcurl-devel libpng-devel libjpeg-turbo-devel freetype-devel \
-            postgresql-devel readline-devel oniguruma-devel libzip-devel \
-            mariadb-connector-c-devel
-
-          echo "GCC Version:"
+          dnf install -y gcc gcc-c++ make autoconf automake libtool bison re2c cmake pkgconfig diffutils file patch wget tar gzip bzip2
+          dnf install -y libxml2-devel openssl-devel sqlite-devel libcurl-devel libpng-devel libjpeg-turbo-devel freetype-devel postgresql-devel readline-devel oniguruma-devel libzip-devel mariadb-connector-c-devel
           gcc --version
-
-# 40
       - name: Download PHP Source
         run: |
           cd /tmp
           wget https://www.php.net/distributions/php-${{ inputs.php_version }}.tar.gz
           tar -xzf php-${{ inputs.php_version }}.tar.gz
-
       - name: Configure PHP
         run: |
           cd /tmp/php-${{ inputs.php_version }}
-
-          CFLAGS="-O2 -fPIE -fno-ifunc" \
-          CXXFLAGS="-O2 -fPIE -fno-ifunc" \
-          LDFLAGS="-pie -Wl,-z,now" \
-          ./configure \
+          CFLAGS="-O2 -fPIE -fno-ifunc" CXXFLAGS="-O2 -fPIE -fno-ifunc" LDFLAGS="-pie -Wl,-z,now" ./configure \
             --prefix=/opt/php8 \
             --with-libdir=lib64 \
             --enable-mbstring \
@@ -74,54 +50,36 @@ jobs:
             --disable-pdo \
             --disable-phpdbg \
             --without-pear
-
-# 80
       - name: Compile PHP
         run: |
           cd /tmp/php-${{ inputs.php_version }}
           make -j"$(nproc)"
-
       - name: Install PHP
         run: |
           cd /tmp/php-${{ inputs.php_version }}
           make install
-
           mkdir -p /opt/php8/lib
-
-          # Runtime libs (adjust as needed)
           cp -L /usr/lib64/libonig.so* /opt/php8/lib/ 2>/dev/null || true
           cp -L /usr/lib64/libzip.so*  /opt/php8/lib/ 2>/dev/null || true
           cp -L /usr/lib64/libpq.so*   /opt/php8/lib/ 2>/dev/null || true
           cp -L /usr/lib64/libmariadb.so* /opt/php8/lib/ 2>/dev/null || true
-
-          echo "=== PHP Binary Dependencies ==="
           ldd /opt/php8/bin/php | head -40
-
-# 110
       - name: Configure php.ini
         run: |
-          cd /tmp/php-${{ inputs.php_version }}
-          cp php.ini-production /opt/php8/bin/php.ini
-
+          cp /tmp/php-${{ inputs.php_version }}/php.ini-production /opt/php8/bin/php.ini
           cat >> /opt/php8/bin/php.ini << 'EOF'
-          ; Custom Configuration
           memory_limit = 256M
           upload_max_filesize = 50M
           post_max_size = 50M
           max_execution_time = 300
           max_input_time = 300
-
           display_errors = Off
           error_reporting = E_ALL & ~E_DEPRECATED & ~E_STRICT
           log_errors = On
-
           date.timezone = Asia/Jakarta
           EOF
-
-# 140
       - name: Create Wrapper
         run: |
-          # Wrapper script only (no sample/testing PHP files)
           cat > /opt/php8/run-php.sh << 'EOF'
           #!/bin/bash
           export PHP_HOME="$(dirname "$(readlink -f "$0")")"
@@ -131,29 +89,21 @@ jobs:
           exec "$PHP_HOME/bin/php" "$@"
           EOF
           chmod +x /opt/php8/run-php.sh
-
       - name: Package PHP Portable
         run: |
           cd /opt
           tar -czf /tmp/php8-portable-rhel.tar.gz php8/
-          echo ""
-          echo "✅ Package created!"
           ls -lh /tmp/php8-portable-rhel.tar.gz
-
-# 170
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: php8-portable-rhel-${{ inputs.php_version }}
           path: /tmp/php8-portable-rhel.tar.gz
           retention-days: 30
-
       - name: Create README
         run: |
           cat > /tmp/README.md << 'EOF'
           # PHP 8 Portable for RHEL/CentOS/Rocky/Alma 8/9
-
-          ✅ Built on Rocky Linux 8 for broad compatibility
 
           ## Quick Start
           ```bash
@@ -161,24 +111,15 @@ jobs:
           ./php8/run-php.sh -v
           ```
 
-          ## Compatibility
-          - Rocky/Alma/RHEL 8.x
-          - Rocky/Alma/RHEL 9.x
-
           ## Included Extensions
-          ✓ JSON, MBString, cURL, GD, Zip, BCMath, Sockets, EXIF, PCNTL, OpenSSL, MySQLi, pgsql
+          JSON, MBString, cURL, GD, Zip, BCMath, Sockets, EXIF, PCNTL, OpenSSL, MySQLi, pgsql
 
           ## Configuration
           Edit `php8/bin/php.ini` to customize settings.
-
-          ---
-          Documentation: https://www.php.net/docs.php
           EOF
-
           cat /tmp/README.md
-
       - name: Upload README
-               uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4
         with:
           name: README
           path: /tmp/README.md
