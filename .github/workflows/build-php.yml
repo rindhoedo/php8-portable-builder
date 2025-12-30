@@ -1,4 +1,4 @@
-name: Build PHP 8 Portable - Final (Fixed v2)
+name: Build PHP 8 Portable - Final (Clean)
 on:
   workflow_dispatch:
     inputs:
@@ -13,29 +13,24 @@ jobs:
     container:
       image: rockylinux:8
     steps:
-      - name: Prepare & Enable Repos
+      - name: Enable repos & install toolchain
         run: |
           set -euo pipefail
           dnf install -y epel-release dnf-plugins-core
           dnf config-manager --set-enabled powertools || dnf config-manager --set-enabled PowerTools || true
-      - name: Install Toolchain & Build Deps
-        run: |
-          set -euo pipefail
           dnf groupinstall -y "Development Tools"
           dnf install -y which autoconf automake libtool bison re2c cmake pkgconfig diffutils file patch wget tar gzip bzip2
-          dnf install -y glibc-devel glibc-headers libstdc++-devel kernel-headers
+          dnf install -y glibc-devel glibc-headers libstdc++-devel
           dnf install -y libxml2-devel openssl-devel sqlite-devel libcurl-devel libpng-devel libjpeg-turbo-devel freetype-devel postgresql-devel readline-devel oniguruma-devel libzip-devel mariadb-connector-c-devel
           ln -sf /usr/bin/gcc /usr/bin/cc
-          echo "GCC:"; gcc --version
-          echo "CC symlink:"; ls -l /usr/bin/cc
-          echo "LD:"; ld --version || true
-      - name: Sanity Check (compile & run tiny PIE program)
+          gcc --version
+      - name: Sanity check compiler
         run: |
           set -euo pipefail
           echo 'int main(){return 0;}' > /tmp/test.c
-          cc -O2 -fPIE /tmp/test.c -pie -o /tmp/a.out
+          cc -O2 /tmp/test.c -o /tmp/a.out
           /tmp/a.out
-      - name: Download PHP Source
+      - name: Download PHP source
         run: |
           set -euo pipefail
           cd /tmp
@@ -45,16 +40,11 @@ jobs:
         env:
           CC: gcc
           CXX: g++
-          AR: /usr/bin/ar
-          RANLIB: /usr/bin/ranlib
           PKG_CONFIG_PATH: /usr/lib64/pkgconfig:/usr/share/pkgconfig
         run: |
           set -euo pipefail
           cd /tmp/php-${{ inputs.php_version }}
-          export CC
-          export CXX
-          export PKG_CONFIG_PATH
-          CFLAGS="-O2 -fPIE -fno-ifunc" CXXFLAGS="-O2 -fPIE -fno-ifunc" LDFLAGS="-pie -Wl,-z,now" ./configure \
+          CFLAGS="-O2 -fPIE" CXXFLAGS="-O2 -fPIE" LDFLAGS="-pie -Wl,-z,now" ./configure \
             --prefix=/opt/php8 \
             --with-libdir=lib64 \
             --enable-mbstring \
@@ -76,12 +66,12 @@ jobs:
             --disable-pdo \
             --disable-phpdbg \
             --without-pear
-      - name: Compile PHP
+      - name: Build PHP
         run: |
           set -euo pipefail
           cd /tmp/php-${{ inputs.php_version }}
           make -j"$(nproc)"
-      - name: Install PHP
+      - name: Install PHP & bundle libs
         run: |
           set -euo pipefail
           cd /tmp/php-${{ inputs.php_version }}
@@ -103,11 +93,11 @@ jobs:
           max_execution_time = 300
           max_input_time = 300
           display_errors = Off
-          error_reporting = EALL & ~E_DEPRECATED & ~E_STRICT
+          error_reporting = E_ALL & ~E_DEPRECATED & ~E_STRICT
           log_errors = On
           date.timezone = Asia/Jakarta
           EOF
-      - name: Create Wrapper
+      - name: Create wrapper
         run: |
           set -euo pipefail
           cat > /opt/php8/run-php.sh << 'EOF'
@@ -120,13 +110,13 @@ jobs:
           exec "$PHP_HOME/bin/php" "$@"
           EOF
           chmod +x /opt/php8/run-php.sh
-      - name: Package PHP Portable
+      - name: Package
         run: |
           set -euo pipefail
           cd /opt
           tar -czf /tmp/php8-portable-rhel.tar.gz php8/
           ls -lh /tmp/php8-portable-rhel.tar.gz
-      - name: Upload Artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: php8-portable-rhel-${{ inputs.php_version }}
