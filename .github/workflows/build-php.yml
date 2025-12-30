@@ -1,4 +1,4 @@
-name: Build PHP 8 Portable - Final
+name: Build PHP 8 Portable - Final (Fixed)
 on:
   workflow_dispatch:
     inputs:
@@ -16,18 +16,18 @@ jobs:
       - name: Install Build Dependencies
         run: |
           set -euo pipefail
-          dnf install -y epel-release
-          dnf install -y dnf-plugins-core
-          dnf config-manager --set-enabled powertools
+          dnf install -y epel-release dnf-plugins-core
+          dnf config-manager --set-enabled powertools || dnf config-manager --set-enabled PowerTools || true
           dnf groupinstall -y "Development Tools"
-          dnf install -y autoconf automake libtool bison re2c cmake pkgconfig diffutils file patch wget tar gzip bzip2
-          dnf install -y glibc-devel glibc-headers libstdc++-devel
+          dnf install -y autoconf automake libtool bison re2c cmake pkgconfig diffutils file patch wget tar gzip bzip2 which
+          dnf install -y glibc-devel glibc-headers libstdc++-devel kernel-headers
           dnf install -y libxml2-devel openssl-devel sqlite-devel \
             libcurl-devel libpng-devel libjpeg-turbo-devel freetype-devel \
             postgresql-devel readline-devel oniguruma-devel libzip-devel \
             mariadb-connector-c-devel
           echo "GCC Version:"; gcc --version
-          echo "LD Version:"; ld --version || true
+          echo "Binutils (ld):"; ld --version || true
+          echo "Kernel headers:"; rpm -q kernel-headers || true
       - name: Sanity Check Toolchain (PIE)
         run: |
           set -euo pipefail
@@ -41,6 +41,9 @@ jobs:
           wget https://www.php.net/distributions/php-${{ inputs.php_version }}.tar.gz
           tar -xzf php-${{ inputs.php_version }}.tar.gz
       - name: Configure PHP
+        env:
+          CC: gcc
+          PKG_CONFIG_PATH: /usr/lib64/pkgconfig:/usr/share/pkgconfig
         run: |
           set -euo pipefail
           cd /tmp/php-${{ inputs.php_version }}
