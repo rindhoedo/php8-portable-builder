@@ -1,4 +1,4 @@
-name: Build PHP 8 Portable for RHEL 7/8/9 (Rocky 8)
+name: Build PHP 8 Portable - Simplified
 
 on:
   workflow_dispatch:
@@ -13,7 +13,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     container:
-      image: rockylinux:8  # Rocky Linux 8 - active support
+      image: rockylinux:8
     
     steps:
       - name: Install Build Dependencies
@@ -22,50 +22,14 @@ jobs:
           dnf install -y epel-release
           dnf config-manager --set-enabled powertools
           
-          # Install base dependencies
+          # Install all dependencies including oniguruma and libzip from repo
           dnf install -y gcc gcc-c++ make autoconf automake libtool \
             libxml2-devel openssl-devel sqlite-devel \
             libcurl-devel libpng-devel libjpeg-devel \
             freetype-devel postgresql-devel readline-devel \
+            oniguruma-devel libzip-devel \
             wget tar gzip bzip2 pkgconfig cmake bison re2c \
             diffutils file
-      
-      - name: Build Oniguruma from Source
-        run: |
-          cd /tmp
-          wget -q https://github.com/kkos/oniguruma/releases/download/v6.9.9/onig-6.9.9.tar.gz
-          tar -xzf onig-6.9.9.tar.gz
-          cd onig-6.9.9
-          ./configure --prefix=/usr/local --disable-shared --enable-static
-          make -j$(nproc)
-          make install
-          ldconfig
-      
-      - name: Build Libzip from Source
-        run: |
-          cd /tmp
-          
-          # Build zlib first (static)
-          wget -q https://zlib.net/zlib-1.3.tar.gz
-          tar -xzf zlib-1.3.tar.gz
-          cd zlib-1.3
-          ./configure --prefix=/usr/local --static
-          make -j$(nproc)
-          make install
-          
-          # Build libzip
-          cd /tmp
-          wget -q https://libzip.org/download/libzip-1.10.1.tar.gz
-          tar -xzf libzip-1.10.1.tar.gz
-          cd libzip-1.10.1
-          mkdir build && cd build
-          cmake .. \
-            -DCMAKE_INSTALL_PREFIX=/usr/local \
-            -DBUILD_SHARED_LIBS=OFF \
-            -DCMAKE_POSITION_INDEPENDENT_CODE=ON
-          make -j$(nproc)
-          make install
-          ldconfig
       
       - name: Download PHP Source
         run: |
@@ -75,11 +39,6 @@ jobs:
       
       - name: Configure PHP
         run: |
-          export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/usr/local/lib64/pkgconfig:$PKG_CONFIG_PATH
-          export CFLAGS="-I/usr/local/include -fPIC"
-          export CPPFLAGS="-I/usr/local/include"
-          export LDFLAGS="-L/usr/local/lib -L/usr/local/lib64"
-          
           cd /tmp/php-${{ inputs.php_version }}
           
           ./configure \
@@ -96,12 +55,10 @@ jobs:
             --with-zlib \
             --with-zip \
             --with-pgsql \
-            --with-pdo-pgsql \
-            --with-pdo-mysql \
             --with-mysqli \
             --enable-pcntl \
             --disable-cgi \
-            --with-pic
+            --disable-pdo
       
       - name: Compile PHP
         run: |
@@ -113,8 +70,14 @@ jobs:
           cd /tmp/php-${{ inputs.php_version }}
           make install
           
-          # Copy necessary libraries
+          # Copy shared libraries yang diperlukan
           mkdir -p /opt/php8/lib
+          
+          # Copy oniguruma
+          cp -L /usr/lib64/libonig.so* /opt/php8/lib/ 2>/dev/null || true
+          
+          # Copy libzip
+          cp -L /usr/lib64/libzip.so* /opt/php8/lib/ 2>/dev/null || true
           
           # Check dependencies
           echo "=== PHP Binary Dependencies ==="
@@ -164,65 +127,91 @@ jobs:
           
           echo "PHP Version: " . phpversion() . "\n";
           echo "Zend Engine: " . zend_version() . "\n";
-          echo "OS: " . php_uname('s') . " " . php_uname('r') . "\n";
-          echo "Architecture: " . php_uname('m') . "\n\n";
+          echo "System: " . php_uname() . "\n\n";
           
-          echo "Required Extensions:\n";
+          echo "Core Extensions Status:\n";
           $required = [
-              'json', 'mbstring', 'curl', 'gd', 'mysqli', 
-              'pdo_mysql', 'pgsql', 'pdo_pgsql', 'zip',
-              'bcmath', 'sockets', 'exif', 'pcntl'
+              'Core', 'date', 'pcre', 'SPL', 'standard',
+              'json', 'mbstring', 'curl', 'gd', 
+              'mysqli', 'pgsql', 
+              'zip', 'bcmath', 'sockets', 'exif', 'pcntl'
           ];
           
           $loaded = 0;
+          $missing = [];
           foreach ($required as $ext) {
               $status = extension_loaded($ext);
-              if ($status) $loaded++;
-              printf("  %-15s: %s\n", $ext, $status ? '✓ Loaded' : '✗ Missing');
+              if ($status) {
+                  $loaded++;
+                  echo "  ✓ $ext\n";
+              } else {
+                  echo "  ✗ $ext\n";
+                  $missing[] = $ext;
+              }
           }
           
-          echo "\nExtension Status: $loaded/" . count($required) . " loaded\n";
+          echo "\nStatus: $loaded/" . count($required) . " extensions loaded\n";
           
-          echo "\nBuilt-in Functions:\n";
-          $functions = [
-              'base64_encode' => 'Base64 encoding',
-              'base64_decode' => 'Base64 decoding',
-              'json_encode' => 'JSON encoding',
-              'json_decode' => 'JSON decoding',
-              'curl_init' => 'cURL support',
-              'mysqli_connect' => 'MySQL support',
-              'pg_connect' => 'PostgreSQL support'
+          echo "\nBuilt-in Functions Test:\n";
+          $tests = [
+              ['base64_encode', 'Base64 Encode', 'test'],
+              ['json_encode', 'JSON Encode', ['key' => 'value']],
+              ['md5', 'MD5 Hash', 'test'],
+              ['sha1', 'SHA1 Hash', 'test'],
           ];
           
-          foreach ($functions as $func => $desc) {
-              $status = function_exists($func) ? '✓' : '✗';
-              printf("  %-20s: %s %s\n", $desc, $status, $func);
+          foreach ($tests as list($func, $name, $input)) {
+              if (function_exists($func)) {
+                  $result = is_array($input) ? $func($input) : $func($input);
+                  echo "  ✓ $name: " . substr($result, 0, 20) . "...\n";
+              } else {
+                  echo "  ✗ $name: Not available\n";
+              }
           }
           
-          echo "\nPHP Configuration:\n";
-          echo "  Max execution time: " . ini_get('max_execution_time') . "s\n";
-          echo "  Memory limit: " . ini_get('memory_limit') . "\n";
-          echo "  Upload max filesize: " . ini_get('upload_max_filesize') . "\n";
-          echo "  Post max size: " . ini_get('post_max_size') . "\n";
-          echo "  Timezone: " . ini_get('date.timezone') . "\n";
+          echo "\nPHP Settings:\n";
+          $settings = [
+              'max_execution_time' => ini_get('max_execution_time') . 's',
+              'memory_limit' => ini_get('memory_limit'),
+              'upload_max_filesize' => ini_get('upload_max_filesize'),
+              'post_max_size' => ini_get('post_max_size'),
+              'date.timezone' => ini_get('date.timezone'),
+          ];
+          
+          foreach ($settings as $key => $value) {
+              echo "  $key: $value\n";
+          }
           
           if (extension_loaded('gd')) {
-              echo "\nGD Library:\n";
+              echo "\nGD Library Info:\n";
               $gd = gd_info();
               echo "  Version: " . $gd['GD Version'] . "\n";
-              echo "  JPEG Support: " . ($gd['JPEG Support'] ? 'Yes' : 'No') . "\n";
-              echo "  PNG Support: " . ($gd['PNG Support'] ? 'Yes' : 'No') . "\n";
-              echo "  FreeType Support: " . ($gd['FreeType Support'] ? 'Yes' : 'No') . "\n";
+              echo "  JPEG: " . ($gd['JPEG Support'] ? 'Yes' : 'No') . "\n";
+              echo "  PNG: " . ($gd['PNG Support'] ? 'Yes' : 'No') . "\n";
+              echo "  FreeType: " . ($gd['FreeType Support'] ? 'Yes' : 'No') . "\n";
+          }
+          
+          if (extension_loaded('mysqli')) {
+              echo "\nMySQL Client Info:\n";
+              echo "  Version: " . mysqli_get_client_info() . "\n";
+          }
+          
+          if (extension_loaded('pgsql')) {
+              echo "\nPostgreSQL Client Info:\n";
+              $version = pg_version();
+              if (isset($version['client'])) {
+                  echo "  Version: " . $version['client'] . "\n";
+              }
           }
           
           echo "\n" . str_repeat("=", 60) . "\n";
           
-          if ($loaded === count($required)) {
-              echo "✅ All required extensions are loaded!\n";
-              echo "✅ PHP is ready to use!\n";
+          if (count($missing) === 0) {
+              echo "✅ ALL TESTS PASSED!\n";
+              echo "✅ PHP is ready to use on RHEL 7/8/9!\n";
               exit(0);
           } else {
-              echo "⚠️  Some extensions are missing!\n";
+              echo "⚠️  Missing extensions: " . implode(', ', $missing) . "\n";
               exit(1);
           }
           ?>
@@ -230,11 +219,15 @@ jobs:
       
       - name: Test PHP
         run: |
+          export LD_LIBRARY_PATH=/opt/php8/lib:$LD_LIBRARY_PATH
+          
+          echo "=== PHP Version ==="
           /opt/php8/bin/php -v
+          
           echo ""
-          echo "=== Installed Extensions ==="
-          /opt/php8/bin/php -m | head -30
-          echo "..."
+          echo "=== Installed Extensions (first 40) ==="
+          /opt/php8/bin/php -m | head -40
+          
           echo ""
           echo "=== Running Compatibility Test ==="
           /opt/php8/bin/php /opt/php8/test-compatibility.php
@@ -242,158 +235,292 @@ jobs:
       - name: Package PHP Portable
         run: |
           cd /opt
-          tar -czf /tmp/php8-portable-rhel-all.tar.gz php8/
+          tar -czf /tmp/php8-portable-rhel.tar.gz php8/
           
           echo ""
-          echo "Package created successfully!"
-          ls -lh /tmp/php8-portable-rhel-all.tar.gz
+          echo "✅ Package created successfully!"
+          ls -lh /tmp/php8-portable-rhel.tar.gz
           echo ""
-          echo "Build completed on Rocky Linux 8"
-          echo "Compatible with: RHEL/CentOS 7, RHEL/Rocky/Alma 8, RHEL/Rocky/Oracle 9"
+          echo "Built on: Rocky Linux 8"
+          echo "Target: RHEL/CentOS 7, RHEL/Rocky/Alma 8/9"
       
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: php8-portable-rhel-all-${{ inputs.php_version }}
-          path: /tmp/php8-portable-rhel-all.tar.gz
+          name: php8-portable-rhel-${{ inputs.php_version }}
+          path: /tmp/php8-portable-rhel.tar.gz
           retention-days: 30
       
-      - name: Create README
+      - name: Create Installation Guide
         run: |
-          cat > /tmp/README.md << 'EOF'
-          # PHP 8 Portable for RHEL/CentOS 7/8/9
-          
-          Built on Rocky Linux 8 for maximum compatibility across RHEL distributions.
-          
-          ## Compatibility
-          
-          ✅ **RHEL/CentOS 7** (7.0 - 7.9)  
-          ✅ **RHEL/Rocky/Alma 8** (8.0 - 8.x)  
-          ✅ **RHEL/Rocky/Oracle/Alma 9** (9.0 - 9.x)  
+          cat > /tmp/INSTALL.md << 'EOF'
+          # PHP 8 Portable - Installation Guide
           
           ## Quick Start
           
           ```bash
-          # Extract
-          tar -xzf php8-portable-rhel-all.tar.gz
+          # 1. Extract
+          tar -xzf php8-portable-rhel.tar.gz
           
-          # Test
+          # 2. Test installation
           ./php8/run-php.sh -v
           
-          # Run compatibility test
+          # 3. Run compatibility test
           ./php8/run-php.sh test-compatibility.php
           
-          # Use PHP
+          # 4. Start using PHP
           ./php8/run-php.sh your-script.php
           ```
           
-          ## Included Extensions
+          ## System Compatibility
           
-          - ✅ **MySQL/MySQLi/PDO MySQL** - Database connectivity
-          - ✅ **PostgreSQL/PDO PostgreSQL** - PostgreSQL support
-          - ✅ **GD** - Image processing (JPEG, PNG, FreeType)
-          - ✅ **cURL** - HTTP client
-          - ✅ **JSON** - JSON encoding/decoding (built-in)
-          - ✅ **Base64** - Base64 encoding/decoding (built-in)
-          - ✅ **Zip** - ZIP archive support
-          - ✅ **MBString** - Multibyte string functions
-          - ✅ **BCMath** - Arbitrary precision mathematics
-          - ✅ **Sockets** - Socket communication
-          - ✅ **EXIF** - Image metadata
-          - ✅ **PCNTL** - Process control
+          ✅ RHEL/CentOS 7.x  
+          ✅ RHEL/Rocky/Alma 8.x  
+          ✅ RHEL/Rocky/Oracle/Alma 9.x  
+          
+          ## What's Included
+          
+          ### Database Support
+          - MySQL/MariaDB (mysqli - native driver)
+          - PostgreSQL (pgsql - native driver)
+          
+          **Note:** PDO is NOT included. Use mysqli for MySQL and pgsql for PostgreSQL.
+          
+          ### Image Processing
+          - GD Library (JPEG, PNG, FreeType)
+          
+          ### Data Formats
+          - JSON (encoding/decoding)
+          - Base64 (encoding/decoding)
+          - ZIP (compression/extraction)
+          - XML
+          
+          ### Network
+          - cURL (HTTP client)
+          - Sockets
+          
+          ### Utilities
+          - MBString (multibyte strings)
+          - BCMath (arbitrary precision)
+          - EXIF (image metadata)
+          - PCNTL (process control)
           
           ## Configuration
           
-          - **php.ini location**: `php8/bin/php.ini`
-          - Edit configuration as needed for your environment
+          Edit `php8/bin/php.ini` to customize:
           
-          ## Excel Support (XLS/XLSX)
+          ```ini
+          memory_limit = 256M
+          upload_max_filesize = 50M
+          post_max_size = 50M
+          max_execution_time = 300
+          date.timezone = Asia/Jakarta
+          ```
           
-          Install PhpSpreadsheet via Composer:
+          ## Installing Composer
           
           ```bash
           cd php8/bin
           wget https://getcomposer.org/installer -O composer-setup.php
           ./php composer-setup.php --install-dir=. --filename=composer
+          chmod +x composer
+          ```
+          
+          ## Excel Support (PhpSpreadsheet)
+          
+          ```bash
+          # After installing Composer
+          cd php8/bin
           ./composer require phpoffice/phpspreadsheet
           ```
           
-          ## Example Usage
-          
+          Example usage:
           ```php
           <?php
-          // test.php
-          echo "PHP Version: " . phpversion() . "\n";
+          require 'php8/bin/vendor/autoload.php';
           
-          // Test JSON
-          $data = ['status' => 'ok', 'message' => 'Hello World'];
-          echo "JSON: " . json_encode($data) . "\n";
+          use PhpOffice\PhpSpreadsheet\Spreadsheet;
+          use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
           
-          // Test Base64
-          echo "Base64: " . base64_encode('Hello World') . "\n";
+          $spreadsheet = new Spreadsheet();
+          $sheet = $spreadsheet->getActiveSheet();
+          $sheet->setCellValue('A1', 'Hello World!');
           
-          // Test extensions
-          $extensions = ['mysqli', 'pgsql', 'gd', 'curl', 'zip'];
-          foreach ($extensions as $ext) {
-              $loaded = extension_loaded($ext) ? '✓' : '✗';
-              echo "$ext: $loaded\n";
-          }
+          $writer = new Xlsx($spreadsheet);
+          $writer->save('hello.xlsx');
           ?>
           ```
           
-          Run with:
-          ```bash
-          ./php8/run-php.sh test.php
+          ## Sample Scripts
+          
+          ### Database Connection (MySQL)
+          
+          ```php
+          <?php
+          // Connect
+          $mysqli = new mysqli("localhost", "user", "password", "database");
+          
+          if ($mysqli->connect_error) {
+              die("Connection failed: " . $mysqli->connect_error);
+          }
+          
+          echo "Connected successfully\n";
+          
+          // Query
+          $result = $mysqli->query("SELECT * FROM users LIMIT 10");
+          
+          if ($result) {
+              while ($row = $result->fetch_assoc()) {
+                  echo "User: " . $row['username'] . "\n";
+              }
+              $result->free();
+          }
+          
+          // Prepared Statement
+          $stmt = $mysqli->prepare("SELECT name, email FROM users WHERE id = ?");
+          $user_id = 1;
+          $stmt->bind_param("i", $user_id);
+          $stmt->execute();
+          $stmt->bind_result($name, $email);
+          
+          while ($stmt->fetch()) {
+              echo "Name: $name, Email: $email\n";
+          }
+          
+          $stmt->close();
+          $mysqli->close();
+          ?>
+          ```
+          
+          ### Database Connection (PostgreSQL)
+          
+          ```php
+          <?php
+          // Connect
+          $conn = pg_connect("host=localhost dbname=mydb user=myuser password=mypass");
+          
+          if (!$conn) {
+              die("Connection failed\n");
+          }
+          
+          echo "Connected successfully\n";
+          
+          // Query
+          $result = pg_query($conn, "SELECT * FROM users LIMIT 10");
+          
+          if ($result) {
+              while ($row = pg_fetch_assoc($result)) {
+                  echo "User: " . $row['username'] . "\n";
+              }
+              pg_free_result($result);
+          }
+          
+          // Prepared Statement
+          $result = pg_prepare($conn, "get_user", "SELECT name, email FROM users WHERE id = $1");
+          $result = pg_execute($conn, "get_user", array(1));
+          
+          if ($result) {
+              $row = pg_fetch_assoc($result);
+              echo "Name: " . $row['name'] . ", Email: " . $row['email'] . "\n";
+              pg_free_result($result);
+          }
+          
+          pg_close($conn);
+          ?>
+          ```
+          
+          ### Image Processing
+          
+          ```php
+          <?php
+          $image = imagecreatetruecolor(200, 200);
+          $color = imagecolorallocate($image, 255, 0, 0);
+          imagefill($image, 0, 0, $color);
+          imagepng($image, 'output.png');
+          imagedestroy($image);
+          echo "Image created!\n";
+          ?>
+          ```
+          
+          ### JSON & Base64
+          
+          ```php
+          <?php
+          // JSON
+          $data = ['name' => 'John', 'age' => 30];
+          $json = json_encode($data);
+          echo "JSON: $json\n";
+          
+          // Base64
+          $encoded = base64_encode('Hello World');
+          echo "Base64: $encoded\n";
+          
+          $decoded = base64_decode($encoded);
+          echo "Decoded: $decoded\n";
+          ?>
           ```
           
           ## Troubleshooting
           
-          ### Missing libraries error
+          ### Missing library errors
           
-          If you get "error while loading shared libraries":
-          
-          ```bash
-          # RHEL 7/8
-          yum install -y libstdc++
-          
-          # RHEL 9
-          dnf install -y libstdc++
-          ```
-          
-          ### Check dependencies
+          If you see "error while loading shared libraries":
           
           ```bash
+          # Check what's missing
           ldd php8/bin/php
+          
+          # Install missing libraries (RHEL 7/8)
+          yum install libstdc++
+          
+          # Install missing libraries (RHEL 9)
+          dnf install libstdc++
           ```
           
-          ### Verify compatibility
+          ### Permission issues
           
           ```bash
-          ./php8/run-php.sh test-compatibility.php
+          chmod +x php8/run-php.sh
+          chmod +x php8/bin/php
           ```
+          
+          ### Path issues
+          
+          Always use absolute path or:
+          ```bash
+          export PATH=/path/to/php8/bin:$PATH
+          php -v
+          ```
+          
+          ## Performance Tips
+          
+          1. Enable OPcache in php.ini:
+          ```ini
+          zend_extension=opcache.so
+          opcache.enable=1
+          opcache.memory_consumption=128
+          opcache.max_accelerated_files=10000
+          ```
+          
+          2. Adjust memory based on workload
+          3. Use connection pooling for databases
+          4. Enable compression for large responses
           
           ## Support
           
           - PHP Documentation: https://www.php.net/docs.php
-          - GitHub Issues: Report problems in your repository
-          
-          ## Build Information
-          
-          - **Base Image**: Rocky Linux 8
-          - **Compiler**: GCC from Rocky 8
-          - **Build Date**: Generated by GitHub Actions
-          - **Compatibility**: Tested on RHEL 7, 8, and 9
+          - Report Issues: Your GitHub repository
           
           ---
           
-          Built with ❤️ for RHEL compatibility
+          **Built with Rocky Linux 8 for maximum RHEL compatibility**
           EOF
           
-          cat /tmp/README.md
+          cat /tmp/INSTALL.md
       
-      - name: Upload README
+      - name: Upload Installation Guide
         uses: actions/upload-artifact@v4
         with:
-          name: README
-          path: /tmp/README.md
+          name: INSTALL
+          path: /tmp/INSTALL.md
           retention-days: 30
