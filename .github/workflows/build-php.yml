@@ -81,6 +81,8 @@ jobs:
           cp -L /usr/lib64/libzip.so*  /opt/php8/lib/ 2>/dev/null || true
           cp -L /usr/lib64/libpq.so*   /opt/php8/lib/ 2>/dev/null || true
           cp -L /usr/lib64/libmariadb.so* /opt/php8/lib/ 2>/dev/null || true
+          cp -L /usr/lib64/libjpeg.so*      /opt/php8/lib/ 2>/dev/null || true
+          cp -L /usr/lib64/libpng*.so*      /opt/php8/lib/ 2>/dev/null || true
           ldd /opt/php8/bin/php | head -40
       - name: Configure php.ini
         run: |
