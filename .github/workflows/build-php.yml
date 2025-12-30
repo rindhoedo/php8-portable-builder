@@ -15,18 +15,34 @@ jobs:
     steps:
       - name: Install Build Dependencies
         run: |
+          set -euo pipefail
           dnf install -y epel-release
+          dnf install -y dnf-plugins-core
           dnf config-manager --set-enabled powertools
-          dnf install -y gcc gcc-c++ make autoconf automake libtool bison re2c cmake pkgconfig diffutils file patch wget tar gzip bzip2
-          dnf install -y libxml2-devel openssl-devel sqlite-devel libcurl-devel libpng-devel libjpeg-turbo-devel freetype-devel postgresql-devel readline-devel oniguruma-devel libzip-devel mariadb-connector-c-devel
-          gcc --version
+          dnf groupinstall -y "Development Tools"
+          dnf install -y autoconf automake libtool bison re2c cmake pkgconfig diffutils file patch wget tar gzip bzip2
+          dnf install -y glibc-devel glibc-headers libstdc++-devel
+          dnf install -y libxml2-devel openssl-devel sqlite-devel \
+            libcurl-devel libpng-devel libjpeg-turbo-devel freetype-devel \
+            postgresql-devel readline-devel oniguruma-devel libzip-devel \
+            mariadb-connector-c-devel
+          echo "GCC Version:"; gcc --version
+          echo "LD Version:"; ld --version || true
+      - name: Sanity Check Toolchain (PIE)
+        run: |
+          set -euo pipefail
+          echo 'int main(){return 0;}' > /tmp/test.c
+          gcc -O2 -fPIE /tmp/test.c -pie -o /tmp/a.out
+          /tmp/a.out
       - name: Download PHP Source
         run: |
+          set -euo pipefail
           cd /tmp
           wget https://www.php.net/distributions/php-${{ inputs.php_version }}.tar.gz
           tar -xzf php-${{ inputs.php_version }}.tar.gz
       - name: Configure PHP
         run: |
+          set -euo pipefail
           cd /tmp/php-${{ inputs.php_version }}
           CFLAGS="-O2 -fPIE -fno-ifunc" CXXFLAGS="-O2 -fPIE -fno-ifunc" LDFLAGS="-pie -Wl,-z,now" ./configure \
             --prefix=/opt/php8 \
@@ -52,10 +68,12 @@ jobs:
             --without-pear
       - name: Compile PHP
         run: |
+          set -euo pipefail
           cd /tmp/php-${{ inputs.php_version }}
           make -j"$(nproc)"
       - name: Install PHP
         run: |
+          set -euo pipefail
           cd /tmp/php-${{ inputs.php_version }}
           make install
           mkdir -p /opt/php8/lib
@@ -66,6 +84,7 @@ jobs:
           ldd /opt/php8/bin/php | head -40
       - name: Configure php.ini
         run: |
+          set -euo pipefail
           cp /tmp/php-${{ inputs.php_version }}/php.ini-production /opt/php8/bin/php.ini
           cat >> /opt/php8/bin/php.ini << 'EOF'
           memory_limit = 256M
@@ -80,8 +99,10 @@ jobs:
           EOF
       - name: Create Wrapper
         run: |
+          set -euo pipefail
           cat > /opt/php8/run-php.sh << 'EOF'
           #!/bin/bash
+          set -euo pipefail
           export PHP_HOME="$(dirname "$(readlink -f "$0")")"
           export LD_LIBRARY_PATH="$PHP_HOME/lib:$LD_LIBRARY_PATH"
           export PATH="$PHP_HOME/bin:$PATH"
@@ -91,6 +112,7 @@ jobs:
           chmod +x /opt/php8/run-php.sh
       - name: Package PHP Portable
         run: |
+          set -euo pipefail
           cd /opt
           tar -czf /tmp/php8-portable-rhel.tar.gz php8/
           ls -lh /tmp/php8-portable-rhel.tar.gz
@@ -102,8 +124,9 @@ jobs:
           retention-days: 30
       - name: Create README
         run: |
+          set -euo pipefail
           cat > /tmp/README.md << 'EOF'
-          # PHP 8 Portable for RHEL/CentOS/Rocky/Alma 8/9
+          # PHP 8 Portable for RHEL/Rocky/Alma 8/9
 
           ## Quick Start
           ```bash
